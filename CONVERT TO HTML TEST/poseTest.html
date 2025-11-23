@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Push-Up Counter with MediaPipe</title>
+
+<script src="./pushup.js"></script>
+<script type="module">
+import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.10";
+
+
+// ====== Angle Calculation ======
+function angleBetweenPoints(a, b, c) {
+  const ab = [a.x - b.x, a.y - b.y];
+  const cb = [c.x - b.x, c.y - b.y];
+  const dot = ab[0]*cb[0] + ab[1]*cb[1];
+  const magAB = Math.hypot(...ab);
+  const magCB = Math.hypot(...cb);
+  return Math.acos(dot / (magAB * magCB)) * (180/Math.PI);
+}
+
+// ====== Main ======
+let video, canvas, ctx;
+let poseLandmarker, counter;
+
+async function init() {
+  video = document.getElementById("video");
+  canvas = document.getElementById("output");
+  ctx = canvas.getContext("2d");
+  counter = new PushupCounter();
+
+  const vision = await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.10/wasm"
+  );
+
+  poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+      delegate: "GPU"
+    },
+    runningMode: "VIDEO",
+    numPoses: 1
+  });
+
+  startCamera();
+}
+
+async function startCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+  video.srcObject = stream;
+  video.addEventListener("loadeddata", predict);
+}
+
+async function predict() {
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const result = await poseLandmarker.detectForVideo(video, performance.now());
+
+  if (result.landmarks && result.landmarks.length > 0) {
+    const lm = result.landmarks[0];
+
+    // draw landmarks
+    for (const p of lm) {
+      ctx.beginPath();
+      ctx.arc(p.x * canvas.width, p.y * canvas.height, 4, 0, 2*Math.PI);
+      ctx.fillStyle = "red";
+      ctx.fill();
+    }
+
+    // Check for points
+    function areLandmarksVisible(lm, indices, threshold = 0.5) {
+        return indices.every(i => lm[i]?.visibility > threshold);
+    }
+
+    // Define the sets of indices for each angle
+    const leftElbowIndices  = [11, 13, 15]; // shoulder, elbow, wrist
+    const rightElbowIndices = [12, 14, 16];
+    const leftHipIndices    = [11, 23, 25]; // shoulder, hip, knee
+    const rightHipIndices   = [12, 24, 26];
+
+    // Check visibility of all critical points
+    const allPointsVisible = [
+    ...leftElbowIndices,
+    ...rightElbowIndices,
+    ...leftHipIndices,
+    ...rightHipIndices
+    ].every(i => lm[i]?.visibility > 0.5);
+
+    let leftElbow, rightElbow, leftHip, rightHip;
+    let metrics;
+
+    if (allPointsVisible) {
+        // Compute angles only if all points are visible
+        leftElbow  = angleBetweenPoints(lm[11], lm[13], lm[15]);
+        rightElbow = angleBetweenPoints(lm[12], lm[14], lm[16]);
+        leftHip    = angleBetweenPoints(lm[11], lm[23], lm[25]);
+        rightHip   = angleBetweenPoints(lm[12], lm[24], lm[26]);
+
+        
+        console.log("===== Angles Calculated =====");
+        console.log("Left Elbow Angle:", leftElbow.toFixed(2));
+        console.log("Right Elbow Angle:", rightElbow.toFixed(2));
+        console.log("Left Hip Angle:", leftHip.toFixed(2));
+        console.log("Right Hip Angle:", rightHip.toFixed(2));
+
+        metrics = {
+            elbow_angle: (leftElbow + rightElbow)/2,
+            hip_angle: (leftHip + rightHip)/2,
+            visibility_ok: allPointsVisible
+        };
+
+
+    } 
+    else {
+        console.warn("Some critical landmarks are not visible — skipping angle calculation");
+    }
+    const [count, tip] = counter.update(metrics);
+    // Display counters
+    ctx.font = "24px sans-serif";
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, 300, 60);
+    ctx.fillStyle = "black";
+    ctx.fillText(`Reps: ${count}`, 20, 30);
+    ctx.fillText(tip, 20, 55);
+  }
+  requestAnimationFrame(predict);
+}
+
+window.onload = init;
+
+</script>
+
+<style>
+body { display:flex; flex-direction:column; align-items:center; background:#111; color:white; font-family:sans-serif; }
+video, canvas { border-radius:8px; margin-top:10px; background:black; }
+</style>
+</head>
+<body>
+<h2>🧍 Push-Up Counter (MediaPipe JS)</h2>
+<video id="video" width="640" height="480" autoplay playsinline></video>
+<canvas id="output" width="640" height="480"></canvas>
+</body>
+</html>
